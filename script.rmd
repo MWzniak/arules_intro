@@ -1,0 +1,176 @@
+---
+title: "Association rules intro"
+author: "Michał Woźniak"
+date: "2024-01-08"
+output:
+  github_document:
+    html_preview: false
+---
+
+In this notebook I will explore the basic association rule and frequent itemset mining methods in R.
+
+Importing necessary libraries
+
+```{r libs, echo=T, results=F, warning=F, message=F}
+library(glue)
+library(arules)
+library(arulesViz)
+```
+
+Loading and examining how the dataset looks like
+
+```{r df_load, echo=T}
+df=read.transactions('dataset.csv',
+                     format='single',
+                     header=T,
+                     cols=c("Member_number","itemDescription"),
+                     sep=",")
+print(as(df,"data.frame")[1:3,"items"])
+```
+
+The dataset consists of transactions. Each row represents a single basket bought by a customer.
+
+How many items have been a part of each transaction?
+
+```{r hist, echo=T}
+hist=hist(size(df),
+          breaks=6,
+          plot=F)
+
+labels=round(hist$counts/nrow(df)*100,1)
+
+hist(size(df),
+     col='lightgreen',
+     breaks=6,
+     main="Histogram of basket sizes",
+     sub=glue("max = {max(size(df))}, min = {min(size(df))}"),
+     ylim=c(0,2000),
+     ylab="Counts",
+     xlim=c(0,30),
+     xlab="Basket size",
+     labels = paste0(labels,"%"),
+     yaxt='n'
+     )
+
+axis(side=2,at=seq(0,2001,1000),labels=seq(0,2001,1000))
+```
+
+how many distinct items are there?
+
+```{r how_many, echo=T}
+length(itemFrequency(df))
+```
+
+how often has each item been bought?
+
+```{r how_often, echo=T}
+rounded_freq=sprintf("%s: %.1f%%",
+                     names(sort(itemFrequency(df),decreasing=T)), 
+                     round(100*sort(itemFrequency(df),decreasing=T),1))
+cat("",paste(names(rounded_freq), rounded_freq, "\n"))
+```
+
+Which items have been bought most frequently?
+
+```{r most_often, echo=T}
+top10=100*sort(itemFrequency(df, type="relative"), decreasing=T)[1:10]
+par(mar=c(5, 8, 4, 2))
+barplot=barplot(top10, 
+        horiz=T, 
+        main="10 most frequently bought items", 
+        xlab="Frequency [%]", 
+        xlim=c(0, 60),
+        las=2,
+        col='lightgreen',
+        xaxt='n')
+axis(1,las=1)
+```
+
+Frequent itemsets
+
+How do we determine if a given itemset is frequent or not? To assess this, we have to calculate the SUPPORT, which essentially tells us how much of all the transactions are the ones with a given basket. It can also be interpreted as a probability of randomly choosing a transaction containing a given itemset from the dataset.
+
+In rder to mine those itemsets, I will use the ECLAT algorithm, which is explained in great detail in this [paper](https://www.researchgate.net/publication/303523871_ECLAT_Algorithm_for_Frequent_Item_sets_Generation/link/5864a68208ae6eb871ad08e4/download?_tp=eyJjb250ZXh0Ijp7ImZpcnN0UGFnZSI6InB1YmxpY2F0aW9uIiwicGFnZSI6InB1YmxpY2F0aW9uIn19). I'm using ECLAT instead of apriori algorithm, because it much less computationally expensive. I'll mine the most frequent itemsets of sizes ranging from 2 to 5.
+
+```{r freq_sets, echo=T, results=F}
+frequent_itemsets=eclat(df,
+                        parameter=list(support=0.01, minlen=2, maxlen=5     ))
+
+```
+
+Here are the most frequent itemsets of each size. It seems that all larger baskets are supersets of their predeccessors. 
+
+```{r freq_sets_inspect, echo=T}
+for (i in 2:5)
+{
+  inspect(sort(subset(frequent_itemsets,size(frequent_itemsets)==i), by='support')[1])
+}
+
+```
+Now I'll begin mining the association rules, which are essentially saying which itemsets are likely to be included with a given itemset in the same basket. The lagorithm in use here is the popular apriori, which is showcased in this [paper](https://www.irjet.net/archives/V4/i11/IRJET-V4I11328.pdf). It mines association rules of a specified length, support and confidence. Confidence can be interpreted as a ratio of the amount of baskets containing both LHS and RHS itemsets  and the amount of baskets containing just the LHS itemset. It is essentially a probability of finding the itemset A together with the itemset B in the basket (knowing that the basket already contains itemset B).
+
+```{r apriori, echo=T, results=F}
+rules=apriori(df,
+              parameter=list(support=0.1, 
+                             confidence=0.5, 
+                             minlen=2))
+```
+
+With rigorous support and confidence requirements the algorithm mined only 5 simple association rules. Besides the support and confidence, Each rule can also be characterized with lift and coverage.
+
+Lift is the ratio of the product of LHS and RHS support values divided by the support of a basket containing both of them. Lift values greater than 1 indicate that LHS and RHS are more likely to be bought together. 
+
+Coverage is simply the support of the LHS itemset. It represents how often LHS itemset occurs in the dataset.
+
+```{r rules_disp, echo=T}
+inspectDT(rules)
+```
+
+Here is a way of visualizing mined association rules on a graph. Arrows are pointing from the LHS itemset to the RHS itemset. The rule is represented by a dot between the arrows.
+
+The graph shows that all generated association rules are about items being bought together with whole milk.
+
+```{r rules_graph, echo=T}
+plot(rules, method="graph")
+```
+
+Now I'll mine association rules which are bigger (baskets containing at least 3 items). To do so I had to lower the support and confidence requirements and specify a minimum length.
+
+```{r more_rules, echo=T, results=F}
+more_rules=apriori(df,
+                   parameter=list(support=0.025, confidence=0.25, minlen=3))
+```
+
+With that many rules created, there is a need to check if some of them aren't there purely by chance. Fisher's exact test based on contingency tables is a quick and easy way of doing this. How the test works is described in great detail in this [lecture](https://www.biostat.jhsph.edu/~iruczins/teaching/140.652/supp21.pdf).
+
+```{r more_rules_significance, echo=F}
+print(glue("There are {length(more_rules[!is.significant(more_rules, trans1, alpha=0.05, adjust='none')])} insignificant rules."))
+```
+Removing insignificant rules.
+```{r more_rules_significance_var, echo=T}
+more_rules=more_rules[is.significant(more_rules, 
+                                     trans1, 
+                                     alpha=0.05, 
+                                     adjust='none')]
+```
+
+Now I need to check if the rules created are in fact the maximal sets, i.e. if there are no general rules which already contain them.
+
+```{r more_rules_maximal, echo=F}
+print(glue("{length(more_rules[!is.maximal(more_rules)])} sets were not maximal."))
+```
+Removing rules which are not maximal.
+```{r more_rules_maximal_var, echo=T}
+more_rules=more_rules[is.maximal(more_rules)]
+```
+After removing all unnecessary rules I can move on to displaying them here.
+```{r more_rules_disp pressure, echo=T}
+inspectDT(more_rules)
+```
+Now we can see how the relationships between more than 2 items look like on a graph. Here are the top 10 rules sorted by their confidence level.
+
+Yet again, most of the rules here are somewhat connected to whole milk. It has to do with the fact that whole milk was a part of over 45% of the transactions.
+```{r more_rules_graph pressure, echo=F}
+plot(sort(more_rules,by='confidence')[1:10], method="graph")
+```
+
